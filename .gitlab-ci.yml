@@ -1,0 +1,105 @@
+default:
+  tags:
+    - docker
+
+stages:
+  - prepare
+  - build
+  - test
+  - deploy
+
+prepare-frontend:
+  image: node:14
+  stage: prepare
+  allow_failure: false
+  script:
+    - cd front-end
+    - yarn install
+  artifacts:
+    expire_in: 1 hour
+    paths:
+      - front-end/node_modules/
+
+build-frontend:
+  image: node:14
+  stage: build
+  allow_failure: false
+  dependencies:
+    - prepare-frontend
+  script:
+    - cd front-end
+    - yarn build
+  artifacts:
+    expire_in: 1 hour
+    paths:
+      - front-end/build/**
+
+build-backend:
+  image: gradle:6.8.3-jdk11
+  stage: build
+  script:
+    - cd backend
+    - gradle build
+  artifacts:
+    expire_in: 1 hour
+    paths:
+      - backend/build/libs/*.jar
+
+test-frontend:
+  image: node:14
+  stage: test
+  allow_failure: false
+  dependencies:
+    - prepare-frontend
+  script:
+    - cd front-end
+    - yarn test
+
+test-backend:
+  image: gradle:6.8.3-jdk11
+  stage: test
+  allow_failure: false
+  dependencies:
+    - build-backend
+  script:
+    - cd backend
+    - gradle test
+
+deploy-frontend:
+  stage: deploy
+  allow_failure: false
+  dependencies:
+    - build-frontend
+  only:
+    refs:
+      - main
+  script:
+    - mkdir -p ~/.ssh
+    - echo "$SERVER_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/id_rsa
+    - chmod 600 ~/.ssh/id_rsa
+    - eval "$(ssh-agent -s)"
+    - ssh-add ~/.ssh/id_rsa
+    - ssh-keyscan -H java2 >> ~/.ssh/known_hosts
+    - cd front-end/build
+    - ssh tieto@java2 "mkdir -p ~/frontend/deployments/$CI_COMMIT_SHA"
+    - scp -r * tieto@java2:~/frontend/deployments/$CI_COMMIT_SHA
+    - ssh tieto@java2 "cd ~/frontend && rm -f current_deployment && ln -s deployments/$CI_COMMIT_SHA current_deployment"
+
+deploy-backend:
+  stage: deploy
+  dependencies:
+    - build-backend
+  only:
+    refs:
+      - main
+  script:
+    - mkdir -p ~/.ssh
+    - echo "$SERVER_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/id_rsa
+    - chmod 600 ~/.ssh/id_rsa
+    - eval "$(ssh-agent -s)"
+    - ssh-add ~/.ssh/id_rsa
+    - ssh-keyscan -H java2 >> ~/.ssh/known_hosts
+    - cd backend/build/libs
+    - ssh tieto@java2 "mkdir -p ~/backend/deployments/$CI_COMMIT_SHA"
+    - scp *.jar tieto@java2:~/backend/deployments/$CI_COMMIT_SHA
+    - ssh tieto@java2 "cd ~/backend && rm -f current_deployment && ln -s ~/backend/deployments/$CI_COMMIT_SHA current_deployment && sudo systemctl restart backend"
